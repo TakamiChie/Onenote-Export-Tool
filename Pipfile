@@ -1,0 +1,16 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+beautifulsoup4 = ">=4.12"
+html5lib = ">=1.1"
+markdownify = ">=0.13"
+python-dateutil = ">=2.9"
+pywin32 = {version = ">=306", markers = "platform_system == \"Windows\""}
+
+[dev-packages]
+
+[requires]
+python_version = "3.12"
