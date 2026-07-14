@@ -629,9 +629,12 @@ def main() -> int:
 
     page = parse_onenote_page(data)
 
+    dir = Path(str(page.page_date.year))
+    (args.output_dir / dir).mkdir(parents=True, exist_ok=True)
+
     output_path = save_parsed_page(
         page=page,
-        output_dir=args.output_dir,
+        output_dir=args.output_dir / dir,
         overwrite=args.overwrite,
         debug_html=args.debug_html,
     )
