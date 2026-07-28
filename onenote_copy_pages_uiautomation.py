@@ -96,6 +96,7 @@ def save_clipboard_as_markdown() -> None:
             sys.executable,
             str(script_path),
             "--clipboard",
+            "--overwrite",
             "--output-dir",
             str(output_dir),
         ],
