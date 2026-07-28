@@ -26,7 +26,9 @@ CF_HTML_HEADER_RE = re.compile(
     re.DOTALL,
 )
 
-WEEK_TITLE_RE = re.compile(r"^\s*(?P<month>\d{1,2})/(?P<day>\d{1,2})週\s*$")
+WEEK_TITLE_RE = re.compile(
+    r"^\s*(?P<month>\d{1,2})/(?P<day>\d{1,2})\s*週\s*$", flags=re.MULTILINE
+)
 
 MONTH_TITLE_RE = re.compile(r"^\s*(?P<month>\d{1,2})\s*月\s*$")
 
