@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import ctypes
+import html
 import subprocess
 import sys
 import time
@@ -10,6 +11,11 @@ from typing import Optional
 import uiautomation as auto
 
 VK_ESCAPE = 0x1B
+VK_CONTROL = 0x11
+VK_RIGHT = 0x27
+VK_A = 0x41
+VK_APPS = 0x5D
+KEYEVENTF_KEYUP = 0x0002
 COPY_ERROR_MESSAGE = "現在、コンテンツをコピーできません。後でもう一度お試しください。"
 COPY_ERROR_WAIT_SECONDS = 1.5
 
@@ -82,6 +88,179 @@ def get_clipboard_preview() -> Optional[str]:
     return None
 
 
+def press_key(key: int) -> None:
+    ctypes.windll.user32.keybd_event(key, 0, 0, 0)
+    ctypes.windll.user32.keybd_event(key, 0, KEYEVENTF_KEYUP, 0)
+    time.sleep(0.05)
+
+
+def press_ctrl_a() -> None:
+    ctypes.windll.user32.keybd_event(VK_CONTROL, 0, 0, 0)
+    press_key(VK_A)
+    ctypes.windll.user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
+
+
+def clear_clipboard() -> bool:
+    try:
+        import win32clipboard
+
+        win32clipboard.OpenClipboard()
+        try:
+            win32clipboard.EmptyClipboard()
+        finally:
+            win32clipboard.CloseClipboard()
+        return True
+    except Exception:
+        return False
+
+
+def get_clipboard_text(wait_seconds: float = 1.0) -> Optional[str]:
+    try:
+        import win32clipboard
+    except ImportError:
+        return None
+
+    deadline = time.monotonic() + wait_seconds
+    while time.monotonic() < deadline:
+        try:
+            win32clipboard.OpenClipboard()
+            try:
+                if win32clipboard.IsClipboardFormatAvailable(
+                    win32clipboard.CF_UNICODETEXT
+                ):
+                    value = win32clipboard.GetClipboardData(
+                        win32clipboard.CF_UNICODETEXT
+                    )
+                    if isinstance(value, str):
+                        return value.strip()
+            finally:
+                win32clipboard.CloseClipboard()
+        except Exception:
+            pass
+        time.sleep(0.1)
+
+    return None
+
+
+def copy_focused_selection(page_name: str) -> Optional[str]:
+    if not clear_clipboard():
+        return None
+
+    press_key(VK_APPS)
+    time.sleep(0.1)
+    menu = auto.MenuControl(searchDepth=2)
+    copy_item = menu.MenuItemControl(Name="コピー")
+    if not copy_item.Exists(1.0, 0.1):
+        press_key(VK_ESCAPE)
+        return None
+
+    copy_item.Click()
+    if close_copy_error_dialog(page_name, wait_seconds=0.5):
+        return None
+    return get_clipboard_text()
+
+
+def set_recovered_page_clipboard(
+    title: str,
+    page_date: str,
+    page_time: str,
+    body: str,
+) -> bool:
+    try:
+        import win32clipboard
+    except ImportError:
+        return False
+
+    body_paragraphs = "".join(
+        f"<p>{html.escape(line)}</p>" for line in body.splitlines()
+    )
+    fragment = (
+        f'<p style="font-size:20pt">{html.escape(title)}</p>'
+        f"<p>{html.escape(page_date)}</p>"
+        f"<p>{html.escape(page_time)}</p>"
+        f"{body_paragraphs}"
+    )
+    html_document = (
+        "<html><head>"
+        '<meta name="Generator" content="Microsoft OneNote">'
+        "</head><body><!--StartFragment-->"
+        f"{fragment}"
+        "<!--EndFragment--></body></html>"
+    )
+
+    try:
+        cf_html = win32clipboard.RegisterClipboardFormat("HTML Format")
+        win32clipboard.OpenClipboard()
+        try:
+            win32clipboard.EmptyClipboard()
+            win32clipboard.SetClipboardData(
+                win32clipboard.CF_UNICODETEXT,
+                "\n".join((title, page_date, page_time, body)),
+            )
+            win32clipboard.SetClipboardData(cf_html, html_document.encode("utf-8"))
+        finally:
+            win32clipboard.CloseClipboard()
+        return True
+    except Exception:
+        return False
+
+
+def recover_page_text(item, page_name: str) -> bool:
+    """ページ内の各領域を個別にコピーし、ページ全体のHTMLを再構成する。"""
+    item.RightClick()
+    menu = auto.MenuControl(searchDepth=2)
+    rename_item = menu.MenuItemControl(Name="名前の変更")
+    if not rename_item.Exists(1.0, 0.1):
+        press_key(VK_ESCAPE)
+        log_message(
+            f"コピーエラーからの復旧失敗: {page_name}: 名前の変更がありません。"
+        )
+        return False
+
+    rename_item.Click()
+    time.sleep(0.2)
+
+    title = copy_focused_selection(page_name)
+    if not title:
+        log_message(
+            f"コピーエラーからの復旧失敗: {page_name}: タイトルを取得できません。"
+        )
+        return False
+
+    print(f"title: {title}")
+    press_key(VK_RIGHT)
+    press_key(VK_RIGHT)
+    page_date = copy_focused_selection(page_name)
+    print(f"page_date: {page_date}")
+    press_key(VK_RIGHT)
+    page_time = copy_focused_selection(page_name)
+    print(f"page_time: {page_time}")
+    press_key(VK_RIGHT)
+
+    for _ in range(3):
+        press_ctrl_a()
+        time.sleep(0.1)
+    body = copy_focused_selection(page_name)
+    print(f"page_body: {body}")
+
+    if not page_date or not page_time or body is None:
+        log_message(
+            f"コピーエラーからの復旧失敗: {page_name}: "
+            "日付、時刻、または本文を取得できません。"
+        )
+        return False
+
+    if not set_recovered_page_clipboard(title, page_date, page_time, body):
+        log_message(
+            f"コピーエラーからの復旧失敗: {page_name}: "
+            "クリップボードを再構成できません。"
+        )
+        return False
+
+    log_message(f"コピーエラーからページテキストを復旧しました: {title}")
+    return True
+
+
 def save_clipboard_as_markdown() -> None:
     repo_root = Path(__file__).resolve().parent
     script_path = repo_root / "onenote_to_markdown.py"
@@ -110,13 +289,16 @@ def save_clipboard_as_markdown() -> None:
         log_message("Markdown保存に失敗しました。")
 
 
-def close_copy_error_dialog(page_name: str) -> bool:
+def close_copy_error_dialog(
+    page_name: str,
+    wait_seconds: float = COPY_ERROR_WAIT_SECONDS,
+) -> bool:
     """コピー失敗ダイアログを閉じ、検出した場合は True を返す。"""
     error_text = auto.TextControl(
         searchDepth=8,
         Name=COPY_ERROR_MESSAGE,
     )
-    deadline = time.monotonic() + COPY_ERROR_WAIT_SECONDS
+    deadline = time.monotonic() + wait_seconds
 
     while time.monotonic() < deadline:
         if error_text.Exists(0, 0):
@@ -165,6 +347,8 @@ def process(item) -> bool:
     mi = menu.MenuItemControl(Name="コピー")
     mi.Click()
     if close_copy_error_dialog(page_name):
+        if recover_page_text(item, page_name):
+            save_clipboard_as_markdown()
         return True
     save_clipboard_as_markdown()
     if bool(ctypes.windll.user32.GetAsyncKeyState(VK_ESCAPE) & 0x8000):
