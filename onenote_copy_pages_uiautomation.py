@@ -10,6 +10,8 @@ from typing import Optional
 import uiautomation as auto
 
 VK_ESCAPE = 0x1B
+COPY_ERROR_MESSAGE = "現在、コンテンツをコピーできません。後でもう一度お試しください。"
+COPY_ERROR_WAIT_SECONDS = 1.5
 
 onenote = auto.WindowControl(searchDepth=1, ClassName="Framework::CFrame")
 list = onenote.ListControl()
@@ -108,6 +110,36 @@ def save_clipboard_as_markdown() -> None:
         log_message("Markdown保存に失敗しました。")
 
 
+def close_copy_error_dialog(page_name: str) -> bool:
+    """コピー失敗ダイアログを閉じ、検出した場合は True を返す。"""
+    error_text = auto.TextControl(
+        searchDepth=8,
+        Name=COPY_ERROR_MESSAGE,
+    )
+    deadline = time.monotonic() + COPY_ERROR_WAIT_SECONDS
+
+    while time.monotonic() < deadline:
+        if error_text.Exists(0, 0):
+            dialog = error_text.GetTopLevelControl()
+            ok_button = dialog.ButtonControl(Name="OK")
+
+            if ok_button.Exists(0.5, 0.1):
+                ok_button.Click()
+            else:
+                dialog.SetFocus()
+                auto.SendKeys("{Esc}")
+
+            page_label = page_name or "ページ名不明"
+            log_message(
+                f"コピーエラー（無視して続行）: {page_label}: " f"{COPY_ERROR_MESSAGE}"
+            )
+            return True
+
+        time.sleep(0.1)
+
+    return False
+
+
 def search_loop() -> None:
     while True:
         for item in list.GetChildren():
@@ -127,11 +159,13 @@ def search_loop() -> None:
 
 
 def process(item) -> bool:
+    page_name = item.Name
     item.RightClick()
     menu = auto.MenuControl(searchDepth=2)
     mi = menu.MenuItemControl(Name="コピー")
     mi.Click()
-    time.sleep(0.5)
+    if close_copy_error_dialog(page_name):
+        return True
     save_clipboard_as_markdown()
     if bool(ctypes.windll.user32.GetAsyncKeyState(VK_ESCAPE) & 0x8000):
         return False

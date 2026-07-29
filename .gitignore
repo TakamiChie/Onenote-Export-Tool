@@ -1,3 +1,4 @@
 output/*
 @AutomationLog.txt
 export_log.txt
+__pycache__/*
