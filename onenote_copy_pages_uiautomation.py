@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import ctypes
 import html
+import re
 import subprocess
 import sys
 import time
@@ -114,7 +115,9 @@ def clear_clipboard() -> bool:
         return False
 
 
-def get_clipboard_text(wait_seconds: float = 1.0) -> Optional[str]:
+def get_clipboard_content(
+    wait_seconds: float = 1.0,
+) -> Optional[tuple[str, Optional[bytes]]]:
     try:
         import win32clipboard
     except ImportError:
@@ -128,11 +131,19 @@ def get_clipboard_text(wait_seconds: float = 1.0) -> Optional[str]:
                 if win32clipboard.IsClipboardFormatAvailable(
                     win32clipboard.CF_UNICODETEXT
                 ):
-                    value = win32clipboard.GetClipboardData(
+                    text = win32clipboard.GetClipboardData(
                         win32clipboard.CF_UNICODETEXT
                     )
-                    if isinstance(value, str):
-                        return value.strip()
+                    if isinstance(text, str):
+                        cf_html = win32clipboard.RegisterClipboardFormat("HTML Format")
+                        html_data = None
+                        if win32clipboard.IsClipboardFormatAvailable(cf_html):
+                            value = win32clipboard.GetClipboardData(cf_html)
+                            if isinstance(value, bytes):
+                                html_data = value
+                            elif isinstance(value, str):
+                                html_data = value.encode("utf-8")
+                        return text.strip(), html_data
             finally:
                 win32clipboard.CloseClipboard()
         except Exception:
@@ -142,7 +153,9 @@ def get_clipboard_text(wait_seconds: float = 1.0) -> Optional[str]:
     return None
 
 
-def copy_focused_selection(page_name: str) -> Optional[str]:
+def copy_focused_selection(
+    page_name: str,
+) -> Optional[tuple[str, Optional[bytes]]]:
     if not clear_clipboard():
         return None
 
@@ -157,7 +170,43 @@ def copy_focused_selection(page_name: str) -> Optional[str]:
     copy_item.Click()
     if close_copy_error_dialog(page_name, wait_seconds=0.5):
         return None
-    return get_clipboard_text()
+    return get_clipboard_content()
+
+
+def extract_html_fragment(data: bytes) -> Optional[str]:
+    """CF_HTMLから選択範囲のHTML断片を取り出す。"""
+    header_match = re.search(
+        rb"StartFragment:(\d+).*?EndFragment:(\d+)",
+        data[:4096],
+        flags=re.DOTALL,
+    )
+    if header_match:
+        start = int(header_match.group(1))
+        end = int(header_match.group(2))
+        if 0 <= start < end <= len(data):
+            fragment_data = data[start:end]
+        else:
+            return None
+    else:
+        fragment_data = data
+
+    for encoding in ("utf-8-sig", "utf-8", "cp932"):
+        try:
+            text = fragment_data.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        return None
+
+    start_marker = "<!--StartFragment-->"
+    end_marker = "<!--EndFragment-->"
+    start = text.find(start_marker)
+    end = text.find(end_marker)
+    if start >= 0 and end > start:
+        return text[start + len(start_marker) : end]
+
+    return text
 
 
 def set_recovered_page_clipboard(
@@ -165,20 +214,23 @@ def set_recovered_page_clipboard(
     page_date: str,
     page_time: str,
     body: str,
+    body_html: Optional[str],
 ) -> bool:
     try:
         import win32clipboard
     except ImportError:
         return False
 
-    body_paragraphs = "".join(
-        f"<p>{html.escape(line)}</p>" for line in body.splitlines()
-    )
+    body_fragment = body_html
+    if not body_fragment:
+        body_fragment = "".join(
+            f"<p>{html.escape(line)}</p>" for line in body.splitlines()
+        )
     fragment = (
         f'<p style="font-size:20pt">{html.escape(title)}</p>'
         f"<p>{html.escape(page_date)}</p>"
         f"<p>{html.escape(page_time)}</p>"
-        f"{body_paragraphs}"
+        f"{body_fragment}"
     )
     html_document = (
         "<html><head>"
@@ -220,27 +272,36 @@ def recover_page_text(item, page_name: str) -> bool:
     rename_item.Click()
     time.sleep(0.2)
 
-    title = copy_focused_selection(page_name)
-    if not title:
+    title_content = copy_focused_selection(page_name)
+    if not title_content or not title_content[0]:
         log_message(
             f"コピーエラーからの復旧失敗: {page_name}: タイトルを取得できません。"
         )
         return False
+    title = title_content[0]
 
     print(f"title: {title}")
     press_key(VK_RIGHT)
     press_key(VK_RIGHT)
-    page_date = copy_focused_selection(page_name)
+    page_date_content = copy_focused_selection(page_name)
+    page_date = page_date_content[0] if page_date_content else None
     print(f"page_date: {page_date}")
     press_key(VK_RIGHT)
-    page_time = copy_focused_selection(page_name)
+    page_time_content = copy_focused_selection(page_name)
+    page_time = page_time_content[0] if page_time_content else None
     print(f"page_time: {page_time}")
     press_key(VK_RIGHT)
 
     for _ in range(3):
         press_ctrl_a()
         time.sleep(0.1)
-    body = copy_focused_selection(page_name)
+    body_content = copy_focused_selection(page_name)
+    body = body_content[0] if body_content else None
+    body_html = (
+        extract_html_fragment(body_content[1])
+        if body_content and body_content[1]
+        else None
+    )
     print(f"page_body: {body}")
 
     if not page_date or not page_time or body is None:
@@ -250,7 +311,13 @@ def recover_page_text(item, page_name: str) -> bool:
         )
         return False
 
-    if not set_recovered_page_clipboard(title, page_date, page_time, body):
+    if not set_recovered_page_clipboard(
+        title,
+        page_date,
+        page_time,
+        body,
+        body_html,
+    ):
         log_message(
             f"コピーエラーからの復旧失敗: {page_name}: "
             "クリップボードを再構成できません。"
